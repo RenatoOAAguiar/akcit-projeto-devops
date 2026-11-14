@@ -31,5 +31,5 @@ def calculate_total(
     with localcontext() as context:
         context.prec = 40
         discount = amount * percentage / Decimal("100")
-        total = amount + discount  # LAB: discount operation
+        total = amount - discount  # LAB: discount operation
         return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
