@@ -30,6 +30,7 @@ def calculate_total(
         raise ValueError("desconto deve estar entre 0 e 100")
     with localcontext() as context:
         context.prec = 40
-        discount = amount * percentage / Decimal("100")
+        discount_rate = percentage / Decimal("10")
+        discount = amount * discount_rate
         total = amount - discount  # LAB: discount operation
         return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
