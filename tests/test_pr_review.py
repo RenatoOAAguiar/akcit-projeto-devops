@@ -37,7 +37,7 @@ def event():
 def test_master_blocks_bug_without_executing_source():
     source = BROKEN + "\nraise RuntimeError('this must never execute')\n"
     result = pr_review.review(context(source), "rules")
-    assert result["agent"] == "Master of Merges"
+    assert result["agent"] == "Revisão de código"
     assert result["verdict"] == "block"
     assert "110.00" in result["findings"][0]
 
@@ -202,7 +202,8 @@ def test_local_gate_status_and_report(tmp_path, source, exit_code, verdict):
         == exit_code
     )
     assert json.loads((output / "review.json").read_text())["verdict"] == verdict
-    assert "Master of Merges" in (output / "review.md").read_text(encoding="utf-8")
+    report = (output / "review.md").read_text(encoding="utf-8")
+    assert "Alterações necessárias" in report or "Revisão concluída" in report
 
 
 def test_missing_key_blocks_when_genai_is_required(tmp_path):
