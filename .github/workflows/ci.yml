@@ -1,0 +1,148 @@
+name: Laboratorio DevOps e GenAI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  checks:
+    name: Qualidade e testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      test_result: ${{ steps.tests.outcome }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements-dev.txt -e .
+      - name: Lint e formatacao
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+      - name: Executar testes e preservar logs
+        id: tests
+        run: python scripts/run_checks.py --output reports/ci
+      - name: Resumo dos testes
+        if: always() && steps.tests.outcome != 'skipped'
+        shell: bash
+        run: |
+          echo '## Resultado dos testes' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Consulte pytest.log, junit.xml, coverage.xml e run.json no artefato de testes.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Guardar evidencias mesmo com falha
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: testes-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/ci/
+          retention-days: 30
+          if-no-files-found: warn
+
+  diagnose:
+    name: Diagnostico da falha
+    needs: checks
+    # Somente branches do próprio repositório recebem credenciais e comentários.
+    # Não utiliza pull_request_target nem executa código de forks com segredos.
+    if: >-
+      always() && !cancelled() && needs.checks.outputs.test_result == 'failure' &&
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          name: testes-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/ci
+      - name: Analisar logs
+        id: analysis
+        env:
+          PYTHONPATH: src
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://api.openai.com/v1' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || 'gpt-4.1-mini' }}
+          REQUIRE_GENAI: ${{ vars.REQUIRE_GENAI || 'false' }}
+        shell: bash
+        run: |
+          mode=auto
+          if [ "$REQUIRE_GENAI" = "true" ]; then mode=llm; fi
+          python -m devops_lab.diagnostics --log reports/ci/pytest.log --output reports/analysis --mode "$mode"
+      - name: Publicar diagnostico no resumo
+        if: always() && hashFiles('reports/analysis/analysis.md') != ''
+        shell: bash
+        run: cat reports/analysis/analysis.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Guardar diagnostico e prompt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostico-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/analysis/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Comentar na PR e preservar historico
+        if: >-
+          always() && github.event_name == 'pull_request' &&
+          hashFiles('reports/analysis/analysis.md') != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('reports/analysis/analysis.md', 'utf8');
+            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = report.replace(/@/g, '＠').slice(0, 50000)
+              + `\n\nExecução: ${url}\nTentativa: ${process.env.GITHUB_RUN_ATTEMPT}`;
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+  delivery:
+    name: Entrega da aplicacao validada
+    needs: checks
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Empacotar aplicacao
+        run: python scripts/build_release.py
+      - name: Validar executavel
+        run: |
+          python dist/devops-lab.pyz --subtotal 100 --discount 10 > result.json
+          python -c "import json; assert json.load(open('result.json'))['total'] == '90.00'"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: aplicacao-${{ github.sha }}
+          path: dist/devops-lab.pyz
+          retention-days: 30
+          if-no-files-found: error
+
